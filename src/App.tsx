@@ -6,7 +6,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, 
-  Trash2, 
   CheckCircle2, 
   History as HistoryIcon, 
   ShoppingCart, 
@@ -16,7 +15,10 @@ import {
   DollarSign,
   ArrowLeft,
   Pencil,
-  Save
+  Save,
+  Trash2,
+  FileText,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -44,7 +46,14 @@ interface ShoppingTrip {
   total: number;
 }
 
-type View = 'list' | 'history';
+interface Draft {
+  id: string;
+  title: string;
+  date: string;
+  items: Product[];
+}
+
+type View = 'list' | 'history' | 'drafts';
 
 // --- Main Component ---
 
@@ -52,6 +61,7 @@ export default function App() {
   const [view, setView] = useState<View>('list');
   const [currentList, setCurrentList] = useState<Product[]>([]);
   const [history, setHistory] = useState<ShoppingTrip[]>([]);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [selectedTrip, setSelectedTrip] = useState<ShoppingTrip | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -110,9 +120,10 @@ export default function App() {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const [listRes, historyRes] = await Promise.all([
+        const [listRes, historyRes, draftsRes] = await Promise.all([
           fetch('/api/list'),
-          fetch('/api/history')
+          fetch('/api/history'),
+          fetch('/api/drafts')
         ]);
         
         if (listRes.ok) {
@@ -126,6 +137,11 @@ export default function App() {
         if (historyRes.ok) {
           const historyData = await historyRes.json();
           setHistory(historyData || []);
+        }
+
+        if (draftsRes.ok) {
+          const draftsData = await draftsRes.json();
+          setDrafts(draftsData || []);
         }
       } catch (error) {
         console.error("Error fetching data:", error);
@@ -222,9 +238,22 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (window.confirm('¿Cerrar sesión?')) {
+    try {
       await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {
+      console.error("Logout error:", err);
+    } finally {
       setUser(null);
+      // Reset app state to guest/empty
+      setCurrentList([]);
+      setHistory([]);
+      setDrafts([]);
+      setListTitle('');
+      setView('list');
+      // Clear local storage to ensure a clean state after logout
+      localStorage.removeItem('shopsmart_current_list');
+      localStorage.removeItem('shopsmart_history');
+      localStorage.removeItem('shopsmart_list_title');
     }
   };
 
@@ -242,12 +271,12 @@ export default function App() {
 
   const addItem = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItemName.trim() || !newItemPrice) return;
+    if (!newItemName.trim()) return;
 
     const newItem: Product = {
       id: crypto.randomUUID(),
       name: newItemName.trim(),
-      price: parseFloat(newItemPrice),
+      price: newItemPrice ? parseFloat(newItemPrice) : 0,
       checked: false,
     };
 
@@ -332,11 +361,80 @@ export default function App() {
       setCurrentList([]);
       setListTitle('');
       alert('¡Compra guardada con éxito!');
+      setView('history');
       
     } catch (error) {
       console.error("Error finishing shopping:", error);
       alert('Error de conexión con el servidor.');
     }
+  };
+
+  const saveAsDraft = async () => {
+    if (currentList.length === 0) return;
+    
+    if (!user) {
+      setShowAuthModal(true);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/drafts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: listTitle, items: currentList })
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        const newDraft: Draft = {
+          id: data.id,
+          title: listTitle || "Sin título",
+          date: new Date().toISOString(),
+          items: [...currentList]
+        };
+        setDrafts([newDraft, ...drafts]);
+        setCurrentList([]);
+        setListTitle('');
+        setView('drafts');
+      }
+    } catch (error) {
+      console.error("Error saving draft:", error);
+    }
+  };
+
+  const resumeDraft = async (draft: Draft) => {
+    if (currentList.length > 0) {
+      if (!window.confirm('Tienes una lista activa. ¿Deseas reemplazarla con este borrador?')) {
+        return;
+      }
+    }
+    
+    setCurrentList(draft.items);
+    setListTitle(draft.title);
+    
+    if (user) {
+      try {
+        await fetch(`/api/drafts/${draft.id}`, { method: 'DELETE' });
+      } catch (error) {
+        console.error("Error deleting draft:", error);
+      }
+    }
+    
+    setDrafts(drafts.filter(d => d.id !== draft.id));
+    setView('list');
+  };
+
+  const deleteDraft = async (id: string) => {
+    if (!window.confirm('¿Estás seguro de que quieres eliminar este borrador?')) return;
+    
+    if (user) {
+      try {
+        await fetch(`/api/drafts/${id}`, { method: 'DELETE' });
+      } catch (error) {
+        console.error("Error deleting draft:", error);
+      }
+    }
+    setDrafts(drafts.filter(d => d.id !== id));
   };
 
   // --- Render Helpers ---
@@ -384,18 +482,32 @@ export default function App() {
             >
               Historial
             </button>
+            <button 
+              onClick={() => setView('drafts')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                view === 'drafts' 
+                ? 'bg-white text-indigo-600 shadow-sm' 
+                : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Borradores
+            </button>
           </nav>
 
           <div className="flex items-center gap-4">
             {user ? (
-              <>
-                <button 
-                  onClick={handleLogout}
-                  className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors hidden md:block"
-                >
-                  Cerrar Sesión
-                </button>
-                <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden border-2 border-white shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="flex flex-col items-end">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider hidden sm:block">Hola, {user.name.split(' ')[0]}</span>
+                  <button 
+                    onClick={handleLogout}
+                    className="text-xs font-bold text-indigo-600 hover:text-red-500 transition-colors flex items-center gap-1"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span>Cerrar Sesión</span>
+                  </button>
+                </div>
+                <div className="w-10 h-10 rounded-full bg-slate-200 overflow-hidden border-2 border-white shadow-sm shrink-0">
                   <img 
                     src={user.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`} 
                     alt="User" 
@@ -403,7 +515,7 @@ export default function App() {
                     referrerPolicy="no-referrer"
                   />
                 </div>
-              </>
+              </div>
             ) : (
               <button 
                 onClick={() => setShowAuthModal(true)}
@@ -474,7 +586,7 @@ export default function App() {
                       />
                     </div>
                     <div className="md:col-span-3 space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Precio</label>
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Precio (opcional)</label>
                       <div className="relative">
                         <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">$</span>
                         <input 
@@ -594,8 +706,17 @@ export default function App() {
                                   }`}>
                                     {item.name}
                                   </p>
-                                  <p className={`text-sm font-medium ${item.checked ? 'text-slate-300' : 'text-indigo-600'}`}>
-                                    ${item.price.toFixed(2)}
+                                  <p 
+                                    onClick={() => !item.checked && startEditing(item)}
+                                    className={`text-sm font-medium transition-all ${
+                                      item.checked 
+                                        ? 'text-slate-300' 
+                                        : item.price > 0 
+                                          ? 'text-indigo-600' 
+                                          : 'text-amber-600 font-bold underline cursor-pointer hover:text-amber-700'
+                                    }`}
+                                  >
+                                    {item.price > 0 ? `$${item.price.toFixed(2)}` : 'Definir precio'}
                                   </p>
                                 </div>
 
@@ -657,6 +778,15 @@ export default function App() {
                           <CheckCircle2 className="w-5 h-5" />
                           <span>Finalizar Compra</span>
                         </button>
+
+                        <button 
+                          onClick={saveAsDraft}
+                          disabled={currentList.length === 0}
+                          className="w-full py-3 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 font-bold rounded-2xl transition-all flex items-center justify-center gap-2"
+                        >
+                          <Save className="w-5 h-5" />
+                          <span>Guardar como Borrador</span>
+                        </button>
                         
                         <div className="flex items-start gap-3 p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
                           <div className="mt-0.5">
@@ -672,7 +802,7 @@ export default function App() {
                 </div>
               </div>
             </motion.div>
-          ) : (
+          ) : view === 'history' ? (
             <motion.div 
               key="history-view"
               initial={{ opacity: 0, x: 20 }}
@@ -761,6 +891,71 @@ export default function App() {
                 )}
               </div>
             </motion.div>
+          ) : (
+            <motion.div 
+              key="drafts-view"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-8"
+            >
+              <section>
+                <h1 className="text-3xl font-black tracking-tight mb-2">Borradores</h1>
+                <p className="text-slate-500">Listas guardadas para completar después.</p>
+              </section>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {drafts.length === 0 ? (
+                  <div className="col-span-full text-center py-20 bg-white rounded-3xl border border-dashed border-slate-300">
+                    <FileText className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                    <p className="text-slate-400 font-medium">No tienes borradores guardados</p>
+                    <button 
+                      onClick={() => setView('list')}
+                      className="mt-4 text-indigo-600 font-bold hover:underline"
+                    >
+                      Crear nueva lista
+                    </button>
+                  </div>
+                ) : (
+                  drafts.map((draft) => (
+                    <motion.div 
+                      key={draft.id}
+                      whileHover={{ y: -4 }}
+                      className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex flex-col"
+                    >
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center">
+                          <FileText className="text-amber-600 w-6 h-6" />
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                            {draft.items.length} productos
+                          </p>
+                        </div>
+                      </div>
+
+                      <h3 className="font-black text-xl text-slate-900 mb-1 truncate">{draft.title}</h3>
+                      <p className="text-xs text-slate-400 mb-6">{formatDate(draft.date)}</p>
+
+                      <div className="flex gap-2 mt-auto">
+                        <button 
+                          onClick={() => resumeDraft(draft)}
+                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all"
+                        >
+                          Continuar
+                        </button>
+                        <button 
+                          onClick={() => deleteDraft(draft.id)}
+                          className="p-3 bg-slate-50 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-xl transition-all"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))
+                )}
+              </div>
+            </motion.div>
           )}
         </AnimatePresence>
 
@@ -804,7 +999,9 @@ export default function App() {
                             <div className={`w-2 h-2 rounded-full ${item.checked ? 'bg-indigo-600' : 'bg-slate-300'}`} />
                             <span className="font-medium text-slate-700">{item.name}</span>
                           </div>
-                          <span className="font-bold text-slate-900">${item.price.toFixed(2)}</span>
+                          <span className="font-bold text-slate-900">
+                            {item.price > 0 ? `$${item.price.toFixed(2)}` : 'Sin precio'}
+                          </span>
                         </div>
                       ))}
                     </div>

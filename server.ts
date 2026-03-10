@@ -45,6 +45,14 @@ db.exec(`
     user_id TEXT PRIMARY KEY,
     title TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS drafts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    title TEXT,
+    date TEXT,
+    items_json TEXT
+  );
 `);
 
 async function startServer() {
@@ -263,6 +271,50 @@ async function startServer() {
     });
     transaction();
 
+    res.json({ status: "ok" });
+  });
+
+  // --- Drafts API Routes ---
+
+  app.get("/api/drafts", authenticate, (req: any, res) => {
+    const userId = req.user.userId;
+    const drafts = db.prepare("SELECT * FROM drafts WHERE user_id = ? ORDER BY date DESC").all(userId);
+    res.json(drafts.map((draft: any) => ({
+      ...draft,
+      items: JSON.parse(draft.items_json)
+    })));
+  });
+
+  app.post("/api/drafts", authenticate, (req: any, res) => {
+    const userId = req.user.userId;
+    const { title, items } = req.body;
+    
+    const draftId = crypto.randomUUID();
+    const date = new Date().toISOString();
+    
+    const insertDraft = db.prepare("INSERT INTO drafts (id, user_id, title, date, items_json) VALUES (?, ?, ?, ?, ?)");
+    insertDraft.run(draftId, userId, title || "Sin título", date, JSON.stringify(items));
+    
+    // Optional: Clear current list after saving as draft? 
+    // The user said "guardar la lista... para que posteriormente se pueda abrir"
+    // Usually this implies archiving the current one.
+    const deleteItems = db.prepare("DELETE FROM current_list WHERE user_id = ?");
+    const deleteTitle = db.prepare("DELETE FROM list_title WHERE user_id = ?");
+    
+    const transaction = db.transaction(() => {
+      deleteItems.run(userId);
+      deleteTitle.run(userId);
+    });
+    transaction();
+
+    res.json({ id: draftId, status: "ok" });
+  });
+
+  app.delete("/api/drafts/:id", authenticate, (req: any, res) => {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    
+    db.prepare("DELETE FROM drafts WHERE id = ? AND user_id = ?").run(id, userId);
     res.json({ status: "ok" });
   });
 
